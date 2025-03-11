@@ -1,24 +1,25 @@
-import streamlit as st
-import PyPDF2
-
-# from langchain_community.embeddings import OllamaEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain.chains import ConversationalRetrievalChain
-
-# from langchain_community.chat_models import ChatOllama
-from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain.schema import HumanMessage, AIMessage
-from langchain_community.chat_message_histories import ChatMessageHistory
-from langchain.memory import ConversationBufferMemory
-from PIL import Image
-import fitz
 import os
+import shutil
 
-st.set_page_config(page_title="Ollama RAG Chatbot", page_icon="🤖", layout="wide")
+import fitz
+import PyPDF2
+import streamlit as st
+from langchain.chains import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferMemory
+from langchain.schema import AIMessage, HumanMessage
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_community.vectorstores import Chroma
+from langchain_ollama import ChatOllama, OllamaEmbeddings
+from loguru import logger
+from PIL import Image
+
+st.set_page_config(
+    page_title="Documents Reader Assistant", page_icon="🤖", layout="wide"
+)
 
 with st.sidebar:
-    st.title("PDF Upload")
+    st.title("PDF Document Upload")
     uploaded_file = st.file_uploader("Upload a PDF file", type="pdf")
 
     if uploaded_file is not None:
@@ -36,7 +37,7 @@ with st.sidebar:
 
         st.image(img, caption=f"Page {page_num}", use_container_width=True)
 
-st.title("Ollama RAG Chatbot")
+st.title("Documents Reader Assistant")
 
 if "chain" not in st.session_state:
     st.session_state.chain = None
@@ -46,6 +47,8 @@ if "chat_history" not in st.session_state:
 
 if "user_question" not in st.session_state:
     st.session_state.user_question = ""
+
+db_directory = "./db"
 
 
 def process_pdf(file):
@@ -70,17 +73,13 @@ if uploaded_file is not None:
 
             embeddings = OllamaEmbeddings(model="nomic-embed-text")
 
-            if os.path.exists("./db") and os.path.isdir("./db"):
-                print("Read from db")
-                docsearch = Chroma(
-                    persist_directory="./db", embedding_function=embeddings
-                )
+            # Delete db folder if it exists
+            if os.path.exists(db_directory) and os.path.isdir(db_directory):
+                shutil.rmtree(db_directory)
 
-            else:
-                print("Create a new db")
-                docsearch = Chroma.from_texts(
-                    texts, embeddings, metadatas=metadatas, persist_directory="./db"
-                )
+            docsearch = Chroma.from_texts(
+                texts, embeddings, metadatas=metadatas, persist_directory=db_directory
+            )
 
             message_history = ChatMessageHistory()
             memory = ConversationBufferMemory(
@@ -93,7 +92,7 @@ if uploaded_file is not None:
             st.session_state.chain = ConversationalRetrievalChain.from_llm(
                 ChatOllama(model="llama3.1", temperature=0.7),
                 chain_type="stuff",
-                retriever=docsearch.as_retriever(search_kwargs={"k": 1}),
+                retriever=docsearch.as_retriever(search_kwargs={"k": 3}),
                 memory=memory,
                 return_source_documents=True,
             )
@@ -113,10 +112,10 @@ st.text_input(
 
 user_input = st.session_state.user_question
 st.session_state.user_question = ""
-print("userinput", user_input, len(user_input))
+logger.info("userinput: {}, {}", user_input, len(user_input))
 
 if user_input:
-    print("user input condition", user_input)
+    logger.info("user input condition {}", user_input)
     if st.session_state.chain is None:
         st.warning("Please upload a PDF file first!")
     else:
@@ -130,24 +129,11 @@ if user_input:
     # st.session_state.question_input = ""
     user_input = ""
 
-# chat_container = st.container()
-# with chat_container:
-#     for message in reversed(st.session_state.chat_history):
-#         if isinstance(message, HumanMessage):
-#             st.write(f"**You:** {message.text}")
-#         else:
-#             st.write(f"**Ollama:** {message.text}")
-
-#         if isinstance(message, AIMessage):
-#             with st.expander("View Sources"):
-#                 for idx, doc in enumerate(source_documents):
-#                     st.write(f"**Source {idx + 1}:** {doc.page_content[:150]}...")
-
 chat_container = st.container()
 with chat_container:
-    print(len(st.session_state.chat_history))
+    # logger.info(len(st.session_state.chat_history))
     for message in reversed(st.session_state.chat_history):
-        print(message)
+        # logger.info(message)
         if isinstance(message, HumanMessage):
             st.markdown(f"👤 {message.content}")
         elif isinstance(message, AIMessage):
@@ -160,4 +146,4 @@ with chat_container:
                     for idx, doc in enumerate(source_documents):
                         st.write(f"Source {idx + 1}:", doc.page_content[:150] + "...")
                 except:
-                    print("No source found")
+                    logger.info("No source found")
