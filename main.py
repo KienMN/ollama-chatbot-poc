@@ -4,8 +4,7 @@ import shutil
 import fitz
 import PyPDF2
 import streamlit as st
-from langchain.chains import (create_history_aware_retriever,
-                              create_retrieval_chain)
+from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
@@ -67,9 +66,9 @@ if "user_question" not in st.session_state:
 
 def process_pdf(file):
     pdf_reader = PyPDF2.PdfReader(file)
-    text = ""
-    for page in pdf_reader.pages:
-        text += page.extract_text()
+    text = []
+    for i, page in enumerate(pdf_reader.pages):
+        text.append({"content": page.extract_text(), "page_number": i + 1})
     return text
 
 
@@ -81,9 +80,22 @@ if uploaded_file is not None:
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=1000, chunk_overlap=100
             )
-            texts = text_splitter.split_text(pdf_text)
 
-            metadatas = [{"source": f"chunk_{i}"} for i in range(len(texts))]
+            texts = []
+            metadatas = []
+
+            for page in pdf_text:
+                chunks = text_splitter.split_text(page.get("content", ""))
+                texts.extend(chunks)
+                metadatas.extend(
+                    [
+                        {
+                            "source": f"chunk_{i}",
+                            "page_number": page.get("page_number", None),
+                        }
+                        for i in range(len(chunks))
+                    ]
+                )
 
             embeddings = OllamaEmbeddings(model=embedding_model)
 
@@ -148,20 +160,17 @@ if user_input:
         st.warning("Please upload a PDF file first!")
     else:
         with st.spinner("Thinking..."):
-            # response = st.session_state.chain.invoke({"question": user_input})
             response = st.session_state.chain.invoke(
                 {"input": user_input, "chat_history": st.session_state.chat_history}
             )
             answer = response["answer"]
             source_documents = response.get("context", None)
-            logger.info(source_documents)
+            # logger.info(source_documents)
 
             st.session_state.chat_history.append(("human", user_input))
             st.session_state.chat_history.append(("ai", answer))
+            # logger.info("chat history: {}", st.session_state.chat_history)
 
-            logger.info("chat history: {}", st.session_state.chat_history)
-
-    # st.session_state.question_input = ""
     user_input = ""
 
 chat_container = st.container()
@@ -176,9 +185,10 @@ with chat_container:
             if source_documents is not None:
                 with st.expander("View Sources"):
                     try:
-                        for idx, doc in enumerate(source_documents):
+                        for doc in source_documents:
                             st.write(
-                                f"Source {idx + 1}:", doc.page_content[:150] + "..."
+                                f"Page {doc.metadata.get('page_number')}:",
+                                doc.page_content[:150] + "...",
                             )
                     except:
                         logger.info("No source found")
