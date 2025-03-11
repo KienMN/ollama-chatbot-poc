@@ -57,5 +57,7 @@ Upload a PDF file on the left sidebar and wait for the file to be processed.
 Start asking questions. 
 ![Question and answer](images/qa.png)
 
+Video (VN): https://youtu.be/52j9PIn9wnw
+
 ## References
 https://www.educative.io/blog/ollama-guide

@@ -1,0 +1,7 @@
+langchain-chroma==0.2.0
+loguru==0.7.3
+langchain==0.3.14
+langchain_community==0.3.14
+PyMuPDF==1.25.2
+PyPDF2==3.0.1
+pillow==11.1.0
