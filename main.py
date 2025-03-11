@@ -4,15 +4,31 @@ import shutil
 import fitz
 import PyPDF2
 import streamlit as st
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
-from langchain.schema import AIMessage, HumanMessage
+from langchain.chains import (create_history_aware_retriever,
+                              create_retrieval_chain)
+from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_community.vectorstores import Chroma
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from loguru import logger
 from PIL import Image
+
+db_directory = "./db"
+embedding_model = "nomic-embed-text"
+chat_model = "llama3.1"
+
+contextualize_q_system_prompt = """Given a chat history and the latest user question \
+which might reference context in the chat history, formulate a standalone question \
+which can be understood without the chat history. Do NOT answer the question, \
+just reformulate it if needed and otherwise return it as is."""
+
+qa_system_prompt = """You are an assistant for question-answering tasks. \
+Use the following pieces of retrieved context to answer the question. \
+If you don't know the answer, just say that you don't know. " \
+
+{context}
+"""
 
 st.set_page_config(
     page_title="Documents Reader Assistant", page_icon="🤖", layout="wide"
@@ -48,8 +64,6 @@ if "chat_history" not in st.session_state:
 if "user_question" not in st.session_state:
     st.session_state.user_question = ""
 
-db_directory = "./db"
-
 
 def process_pdf(file):
     pdf_reader = PyPDF2.PdfReader(file)
@@ -71,7 +85,7 @@ if uploaded_file is not None:
 
             metadatas = [{"source": f"chunk_{i}"} for i in range(len(texts))]
 
-            embeddings = OllamaEmbeddings(model="nomic-embed-text")
+            embeddings = OllamaEmbeddings(model=embedding_model)
 
             # Delete db folder if it exists
             if os.path.exists(db_directory) and os.path.isdir(db_directory):
@@ -81,21 +95,35 @@ if uploaded_file is not None:
                 texts, embeddings, metadatas=metadatas, persist_directory=db_directory
             )
 
-            message_history = ChatMessageHistory()
-            memory = ConversationBufferMemory(
-                memory_key="chat_history",
-                output_key="answer",
-                chat_memory=message_history,
-                return_messages=True,
+            llm = ChatOllama(model=chat_model, temperature=0.7)
+            retriever = docsearch.as_retriever(search_kwargs={"k": 3})
+
+            contextualize_q_prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", contextualize_q_system_prompt),
+                    MessagesPlaceholder("chat_history"),
+                    ("human", "{input}"),
+                ]
             )
 
-            st.session_state.chain = ConversationalRetrievalChain.from_llm(
-                ChatOllama(model="llama3.1", temperature=0.7),
-                chain_type="stuff",
-                retriever=docsearch.as_retriever(search_kwargs={"k": 3}),
-                memory=memory,
-                return_source_documents=True,
+            history_aware_retriever = create_history_aware_retriever(
+                llm, retriever, contextualize_q_prompt
             )
+
+            qa_prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", qa_system_prompt),
+                    MessagesPlaceholder("chat_history"),
+                    ("human", "{input}"),
+                ]
+            )
+
+            question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+
+            rag_chain = create_retrieval_chain(
+                history_aware_retriever, question_answer_chain
+            )
+            st.session_state.chain = rag_chain
 
             st.success("PDF processed successfully!")
 
@@ -120,30 +148,37 @@ if user_input:
         st.warning("Please upload a PDF file first!")
     else:
         with st.spinner("Thinking..."):
-            response = st.session_state.chain.invoke({"question": user_input})
+            # response = st.session_state.chain.invoke({"question": user_input})
+            response = st.session_state.chain.invoke(
+                {"input": user_input, "chat_history": st.session_state.chat_history}
+            )
             answer = response["answer"]
-            source_documents = response["source_documents"]
+            source_documents = response.get("context", None)
+            logger.info(source_documents)
 
-            st.session_state.chat_history.append(HumanMessage(user_input))
-            st.session_state.chat_history.append(AIMessage(answer))
+            st.session_state.chat_history.append(("human", user_input))
+            st.session_state.chat_history.append(("ai", answer))
+
+            logger.info("chat history: {}", st.session_state.chat_history)
+
     # st.session_state.question_input = ""
     user_input = ""
 
 chat_container = st.container()
 with chat_container:
-    # logger.info(len(st.session_state.chat_history))
     for message in reversed(st.session_state.chat_history):
-        # logger.info(message)
-        if isinstance(message, HumanMessage):
-            st.markdown(f"👤 {message.content}")
-        elif isinstance(message, AIMessage):
-            st.markdown(f"🤖 {message.content}")
+        if message[0] == "human":
+            st.markdown(f"👤 {message[1]}")
+        elif message[0] == "ai":
+            st.markdown(f"🤖 {message[1]}")
 
-        if isinstance(message, AIMessage):
-            # if source_documents is not None:
-            with st.expander("View Sources"):
-                try:
-                    for idx, doc in enumerate(source_documents):
-                        st.write(f"Source {idx + 1}:", doc.page_content[:150] + "...")
-                except:
-                    logger.info("No source found")
+        if message[0] == "ai":
+            if source_documents is not None:
+                with st.expander("View Sources"):
+                    try:
+                        for idx, doc in enumerate(source_documents):
+                            st.write(
+                                f"Source {idx + 1}:", doc.page_content[:150] + "..."
+                            )
+                    except:
+                        logger.info("No source found")
